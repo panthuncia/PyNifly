@@ -26,6 +26,9 @@ extern "C" NIFLY_API int getShapeBoneIDs(void* theNif, void* theShape, int* buf,
 extern "C" NIFLY_API int getShapeBoneNames(void* theNif, void* theShape, char* buf, int buflen);
 extern "C" NIFLY_API int getShapeBoneWeightsCount(void* theNif, void* theShape, int boneIndex);
 extern "C" NIFLY_API int getShapeBoneWeights(void* theNif, void* theShape, int boneIndex, VertexWeightPair * buf, int buflen);
+extern "C" NIFLY_API int getShapeSkinBoneCount(void* theNif, void* theShape);
+extern "C" NIFLY_API int getShapeSkinBoneNames(void* theNif, void* theShape, char* buf, int buflen);
+extern "C" NIFLY_API int getShapeSkinWeightsCount(void* theNif, void* theShape, int boneIndex);
 extern "C" NIFLY_API int getShapeSkinWeights(void* theNif, void* theShape, int boneIndex, BoneWeight * buf, int buflen);
 extern "C" NIFLY_API void addAllBonesToShape(void* nifref, void* shaperef, int boneCount, int* boneIDs);
 extern "C" NIFLY_API int getShapes(void* f, void** buf, int len, int start);
@@ -33,6 +36,8 @@ void getShape(void* nifref, nifly::NiShape* theShape, NiShapeBuf* buf);
 extern "C" NIFLY_API int getShapeBlockName(void* theShape, char* buf, int buflen);
 extern "C" NIFLY_API int getVertsForShape(void* theNif, void* theShape, nifly::Vector3* buf, int len, int start);
 extern "C" NIFLY_API int getNormalsForShape(void* theNif, void* theShape, nifly::Vector3* buf, int len, int start);
+extern "C" NIFLY_API int getTangentsForShape(void* theNif, void* theShape, nifly::Vector3* buf, int len, int start);
+extern "C" NIFLY_API int getBitangentsForShape(void* theNif, void* theShape, nifly::Vector3* buf, int len, int start);
 extern "C" NIFLY_API int getTriangles(void* theNif, void* theShape, nifly::Triangle* buf, int len, int start);
 extern "C" NIFLY_API bool getShapeGlobalToSkin(void* nifRef, void* shapeRef, nifly::MatTransform* xform);
 extern "C" NIFLY_API void calcShapeGlobalToSkin(void* nifRef, void* shapeRef, nifly::MatTransform * xform);

@@ -62,11 +62,6 @@ enum TargetGame StrToTargetGame(const char* gameName) {
 NIFLY_API void* load(const char* filename) {
     NifLoadOptions options;
 
-    if (const char* index = strstr(filename, "\\meshes")) {
-        options.loadMaterials = true;
-        options.projectRoot = std::string(filename, index);
-    }
-
     NifFile* nif = new NifFile();
     int errval = nif->Load(std::filesystem::path(filename), options);
 
@@ -344,6 +339,38 @@ NIFLY_API int getNormalsForShape(void* theNif, void* theShape, float* buf, int l
     else
         return 0;
 }
+
+NIFLY_API int getTangentsForShape(void* theNif, void* theShape, float* buf, int len, int start)
+{
+    NifFile* nif = static_cast<NifFile*>(theNif);
+    nifly::NiShape* shape = static_cast<nifly::NiShape*>(theShape);
+    const std::vector<nifly::Vector3>* tangents = nif->GetTangentsForShape(shape);
+    if (tangents) {
+        for (int i = start, j = 0; j < len && i < tangents->size(); i++) {
+            buf[j++] = tangents->at(i).x;
+            buf[j++] = tangents->at(i).y;
+            buf[j++] = tangents->at(i).z;
+        }
+        return int(tangents->size());
+    }
+    return 0;
+}
+
+NIFLY_API int getBitangentsForShape(void* theNif, void* theShape, float* buf, int len, int start)
+{
+    NifFile* nif = static_cast<NifFile*>(theNif);
+    nifly::NiShape* shape = static_cast<nifly::NiShape*>(theShape);
+    const std::vector<nifly::Vector3>* bitangents = nif->GetBitangentsForShape(shape);
+    if (bitangents) {
+        for (int i = start, j = 0; j < len && i < bitangents->size(); i++) {
+            buf[j++] = bitangents->at(i).x;
+            buf[j++] = bitangents->at(i).y;
+            buf[j++] = bitangents->at(i).z;
+        }
+        return int(bitangents->size());
+    }
+    return 0;
+}
 //NIFLY_API int getRawVertsForShape(void* theNif, void* theShape, float* buf, int len, int start)
 //{
 //    NifFile* nif = static_cast<NifFile*>(theNif);
@@ -380,7 +407,13 @@ NIFLY_API int getUVs(void* theNif, void* theShape, float* buf, int len, int star
     NifFile* nif = static_cast<NifFile*>(theNif);
     nifly::NiShape* shape = static_cast<nifly::NiShape*>(theShape);
     const std::vector<nifly::Vector2>* uv = nif->GetUvsForShape(shape);
-    for (int i = start, j = 0; j < len && i < uv->size(); i++) {
+    if (!uv) {
+        return 0;
+    }
+    if (!buf || len <= 0) {
+        return int(uv->size());
+    }
+    for (int i = start, j = 0; j + 1 < len && i < uv->size(); i++) {
         buf[j++] = uv->at(i).u;
         buf[j++] = uv->at(i).v;
     }
@@ -535,6 +568,20 @@ NIFLY_API bool getShapeSkinToBone(void* nifPtr, void* shapePtr, const  char* bon
     bool hasXform = static_cast<NifFile*>(nifPtr)->GetShapeTransformSkinToBone(
         static_cast<NiShape*>(shapePtr),
         std::string(boneName),
+        xf);
+    if (hasXform) XformToBuffer(buf, xf);
+    return hasXform;
+}
+
+NIFLY_API bool getShapeSkinToBoneByIndex(void* nifPtr, void* shapePtr, int boneIndex, float* buf) {
+    if (boneIndex < 0) {
+        return false;
+    }
+
+    MatTransform xf;
+    bool hasXform = static_cast<NifFile*>(nifPtr)->GetShapeTransformSkinToBone(
+        static_cast<NiShape*>(shapePtr),
+        static_cast<uint32_t>(boneIndex),
         xf);
     if (hasXform) XformToBuffer(buf, xf);
     return hasXform;
@@ -726,6 +773,187 @@ NIFLY_API int getShapeBoneWeights(void* theNif, void* theShape, int boneIndex,
     }
 
     return numWeights;
+}
+
+static NiSkinData* GetShapeNiSkinData(NifFile* nif, NiShape* shape)
+{
+    if (!nif || !shape) {
+        return nullptr;
+    }
+
+    NiHeader& hdr = nif->GetHeader();
+    NiSkinInstance* skin = hdr.GetBlock<NiSkinInstance>(shape->SkinInstanceRef());
+    if (!skin) {
+        return nullptr;
+    }
+
+    return hdr.GetBlock<NiSkinData>(skin->dataRef);
+}
+
+NIFLY_API int getShapePartitionSkinning(void* theNif, void* theShape, uint16_t* jointIndices, float* jointWeights, int vertexCount)
+{
+    NifFile* nif = static_cast<NifFile*>(theNif);
+    NiShape* shape = static_cast<NiShape*>(theShape);
+    if (!nif || !shape || !jointIndices || !jointWeights || vertexCount <= 0) {
+        return 0;
+    }
+
+    NiHeader& hdr = nif->GetHeader();
+    NiSkinInstance* skin = hdr.GetBlock<NiSkinInstance>(shape->SkinInstanceRef());
+    if (!skin) {
+        return 0;
+    }
+
+    NiSkinData* skinData = hdr.GetBlock<NiSkinData>(skin->dataRef);
+    NiSkinPartition* skinPart = hdr.GetBlock<NiSkinPartition>(skin->skinPartitionRef);
+    if (!skinData || !skinPart || skinData->bones.empty() || skinPart->partitions.empty()) {
+        return 0;
+    }
+
+    const int shapeVertexCount = static_cast<int>(shape->GetNumVertices());
+    if (shapeVertexCount <= 0 || vertexCount < shapeVertexCount) {
+        return 0;
+    }
+
+    for (int i = 0; i < vertexCount * 4; ++i) {
+        jointIndices[i] = 0;
+        jointWeights[i] = 0.0f;
+    }
+
+    int touchedVertices = 0;
+    std::vector<uint8_t> touched(static_cast<size_t>(shapeVertexCount), 0);
+
+    for (const auto& part : skinPart->partitions) {
+        if (!part.hasBoneIndices || !part.hasVertexWeights || part.bones.empty()) {
+            continue;
+        }
+
+        const size_t partitionVertexCount = std::min(part.boneIndices.size(), part.vertexWeights.size());
+        for (size_t partitionVertex = 0; partitionVertex < partitionVertexCount; ++partitionVertex) {
+            const uint16_t shapeVertex = part.hasVertexMap && partitionVertex < part.vertexMap.size()
+                ? part.vertexMap[partitionVertex]
+                : static_cast<uint16_t>(partitionVertex);
+            if (shapeVertex >= static_cast<uint16_t>(shapeVertexCount)) {
+                continue;
+            }
+
+            const auto& localBones = part.boneIndices[partitionVertex];
+            const auto& weights = part.vertexWeights[partitionVertex];
+            const uint8_t* localBoneSlots = &localBones.i1;
+            const float* localWeights = &weights.w1;
+
+            float total = 0.0f;
+            uint16_t remappedBones[4] = { 0, 0, 0, 0 };
+            float remappedWeights[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+            for (int slot = 0; slot < 4; ++slot) {
+                const uint8_t localBone = localBoneSlots[slot];
+                if (localBone >= part.bones.size()) {
+                    continue;
+                }
+
+                const uint16_t globalBone = part.bones[localBone];
+                if (globalBone >= skinData->bones.size() || localWeights[slot] <= 0.0f) {
+                    continue;
+                }
+
+                remappedBones[slot] = globalBone;
+                remappedWeights[slot] = localWeights[slot];
+                total += localWeights[slot];
+            }
+
+            if (total <= 0.0f) {
+                continue;
+            }
+
+            if (!touched[shapeVertex]) {
+                touched[shapeVertex] = 1;
+                ++touchedVertices;
+            }
+
+            const size_t dst = static_cast<size_t>(shapeVertex) * 4u;
+            for (int slot = 0; slot < 4; ++slot) {
+                jointIndices[dst + slot] = remappedBones[slot];
+                jointWeights[dst + slot] = remappedWeights[slot] / total;
+            }
+        }
+    }
+
+    return touchedVertices;
+}
+
+NIFLY_API int getShapeSkinBoneCount(void* theNif, void* theShape)
+{
+    NifFile* nif = static_cast<NifFile*>(theNif);
+    NiShape* shape = static_cast<NiShape*>(theShape);
+    NiSkinData* skinData = GetShapeNiSkinData(nif, shape);
+    return skinData ? static_cast<int>(skinData->bones.size()) : 0;
+}
+
+NIFLY_API int getShapeSkinBoneNames(void* theNif, void* theShape, char* buf, int buflen)
+{
+    NifFile* nif = static_cast<NifFile*>(theNif);
+    NiShape* shape = static_cast<NiShape*>(theShape);
+    NiSkinData* skinData = GetShapeNiSkinData(nif, shape);
+    if (!nif || !shape || !skinData) {
+        if (buf && buflen > 0) {
+            buf[0] = '\0';
+        }
+        return 0;
+    }
+
+    std::vector<std::string> names;
+    nif->GetShapeBoneList(shape, names);
+    const size_t count = std::min(names.size(), skinData->bones.size());
+
+    std::string s;
+    for (size_t i = 0; i < count; ++i) {
+        if (!s.empty()) {
+            s += "\n";
+        }
+        s += names[i];
+    }
+
+    if (buf && buflen > 0) {
+        const int copylen = std::min(buflen - 1, static_cast<int>(s.length()));
+        s.copy(buf, copylen, 0);
+        buf[copylen] = '\0';
+    }
+
+    return static_cast<int>(s.length());
+}
+
+NIFLY_API int getShapeSkinWeightsCount(void* theNif, void* theShape, int boneIndex)
+{
+    NiSkinData* skinData = GetShapeNiSkinData(static_cast<NifFile*>(theNif), static_cast<NiShape*>(theShape));
+    if (!skinData || !skinData->hasVertWeights || boneIndex < 0 || boneIndex >= static_cast<int>(skinData->bones.size())) {
+        return 0;
+    }
+
+    return static_cast<int>(skinData->bones[static_cast<size_t>(boneIndex)].vertexWeights.size());
+}
+
+NIFLY_API int getShapeSkinWeights(void* theNif, void* theShape, int boneIndex, struct BoneWeight* buf, int buflen)
+{
+    NiSkinData* skinData = GetShapeNiSkinData(static_cast<NifFile*>(theNif), static_cast<NiShape*>(theShape));
+    if (!skinData || !skinData->hasVertWeights || boneIndex < 0 || boneIndex >= static_cast<int>(skinData->bones.size())) {
+        return 0;
+    }
+
+    NiSkinData::BoneData& bone = skinData->bones[static_cast<size_t>(boneIndex)];
+    if (buf && buflen > 0) {
+        int written = 0;
+        for (const auto& sw : bone.vertexWeights) {
+            if (written >= buflen) {
+                break;
+            }
+            buf[written].bone_index = sw.index;
+            buf[written].weight = sw.weight;
+            ++written;
+        }
+    }
+
+    return static_cast<int>(bone.vertexWeights.size());
 }
 
 NIFLY_API void addBoneToSkin(void* anim, const char* boneName,
@@ -1458,7 +1686,13 @@ NIFLY_API int getColorsForShape(void* nifref, void* shaperef, float* colors, int
     NifFile* nif = static_cast<NifFile*>(nifref);
     NiShape* shape = static_cast<NiShape*>(shaperef);
     const std::vector<Color4>* theColors = nif->GetColorsForShape(shape->name.get());
-    for (int i = 0, j = 0; j < colorLen && i < theColors->size(); i++) {
+    if (!theColors) {
+        return 0;
+    }
+    if (!colors || colorLen <= 0) {
+        return int(theColors->size());
+    }
+    for (int i = 0, j = 0; j + 3 < colorLen && i < theColors->size(); i++) {
         colors[j++] = theColors->at(i).r;
         colors[j++] = theColors->at(i).g;
         colors[j++] = theColors->at(i).b;
