@@ -558,7 +558,8 @@ def TEST_IMP_EXP_FO4():
 
 @TT.category('FO4', 'BODYPART')
 @TT.expect_errors(("Some faces have been assigned to more than one partition",
-                   "in multiple partitions",))
+                   "in multiple partitions",
+                   "could not find segment file",))
 def TEST_IMP_EXP_FO4_2():
     """Can read the body armor with 2 parts"""
 
@@ -595,6 +596,8 @@ def TEST_IMP_EXP_FO4_2():
 
 
 @TT.category('FO4', 'BODYPART')
+@TT.expect_errors(("could not find segment file",
+                   "not found in SSF",))
 def TEST_IMP_EXP_FO4_3():
     """Can read clothes + body and they come in sensibly"""
 
@@ -2085,6 +2088,372 @@ def TEST_SEGMENTS():
     
 
 @TT.category('FO4', 'BODYPART', 'PARTITIONS')
+@TT.expect_errors(('Some faces have been assigned to more than one partition',))
+def TEST_FO4_CUT_OFFSETS_ROUNDTRIP():
+    """Cut offsets (dismemberment slice planes) survive Blender import/export.
+
+    Import vanilla MaleBody, verify the FO4_CUT_OFFSETS object prop carries the
+    per-subsegment cut lists; re-export; re-read the exported NIF and verify the
+    cut floats land back on the same subsegments. All 37 vanilla cuts expected.
+    """
+    import json
+    testfile = TTB.test_file(r"tests/FO4/VanillaMaleBody.nif")
+    outfile = TTB.test_file(r"tests/Out/TEST_FO4_CUT_OFFSETS_ROUNDTRIP.nif")
+    bpy.ops.import_scene.pynifly(filepath=testfile)
+
+    obj = bpy.context.object
+
+    # Custom prop carries the per-subseg cut lists, keyed by vertex-group name.
+    raw = obj.get('FO4_CUT_OFFSETS')
+    assert raw, "FO4_CUT_OFFSETS custom prop populated on import"
+    cuts = json.loads(raw)
+    assert TT.is_equiv(cuts["FO4 Seg 002 | 001 | Up Arm.R"],
+                       [7.6055, 9.5069, 11.4083, 13.3096],
+                       "Up Arm.R bearer cut offsets in prop", e=0.001)
+    total_in = sum(len(v) for v in cuts.values())
+    assert TT.is_eq(total_in, 37, "all vanilla cut offsets captured in prop")
+
+    obj.select_set(True)
+    bpy.ops.export_scene.pynifly(filepath=outfile, target_game="FO4")
+
+    nif2 = pyn.NifFile(outfile)
+    chk_subs = {}
+    for seg in nif2.shapes[0].partitions:
+        for ss in seg.subsegments:
+            chk_subs[ss.name] = ss
+    total_out = sum(len(ss.cut_offsets) for ss in chk_subs.values())
+    assert TT.is_eq(total_out, 37, "cut offsets preserved through Blender round-trip")
+    assert TT.is_equiv(chk_subs["FO4 Seg 002 | 001 | Up Arm.R"].cut_offsets,
+                       [7.6055, 9.5069, 11.4083, 13.3096],
+                       "Up Arm.R bearer cuts after export", e=0.001)
+    assert TT.is_equiv(chk_subs["FO4 Seg 002 | 003 | Lo Arm.R"].cut_offsets,
+                       [5.6032, 7.4710, 9.3387, 11.2065, 13.0742],
+                       "Lo Arm.R bearer cuts after export", e=0.001)
+
+
+@TT.category('FO4', 'BODYPART', 'PARTITIONS')
+@TT.expect_errors(('Some faces have been assigned to more than one partition',))
+def TEST_FO4_CUT_DISKS_IMPORTED():
+    """Cut-offset visualization disks are created on FO4 import, linked into a
+    `<obj>_Cutpoints` collection and bone-parented to the dismember bone the
+    SSF assigns, with the first Up Arm.R disk landing at the expected world
+    position along the bone's limb axis (from bone orientation, not the
+    hierarchy).
+
+    Bone identity comes from MaleBody.ssf (a sibling fixture of the NIF):
+    subseg (seg 2, sub 1) -> RArm_UpperArm -> Blender `Arm_UpperArm.R`. The
+    limb axis is bone local +X (rotate-bones-pretty defaults OFF) and the first
+    cut value is 7.6055.
+    """
+    testfile = TTB.test_file(r"tests/FO4/VanillaMaleBody.nif")
+    bpy.ops.import_scene.pynifly(filepath=testfile)
+
+    body = bpy.data.objects.get("BaseMaleBody:0")
+    assert body is not None, "imported the body"
+    arma = body.find_armature()
+    assert arma is not None, "found the armature"
+
+    # The grouping collection must exist with disks linked into it, and be
+    # nested under the mesh's own collection.
+    coll = bpy.data.collections.get(f"{body.name}_Cutpoints")
+    assert coll is not None, "per-shape Cutpoints collection created"
+    assert TT.is_gt(len(coll.objects), 0, "at least one cut disk in the collection")
+    assert coll.name in [c.name for c in body.users_collection[0].children], \
+        "Cutpoints collection nested under the mesh's collection"
+
+    bone = arma.data.bones.get("Arm_UpperArm.R") or arma.data.bones.get("RArm_UpperArm")
+    assert bone is not None, "upper-arm bone present"
+
+    # Disk named "Cutpoint <bone> <n>"; first cut on the Up Arm.R bearer.
+    disk_name = f"Cutpoint {bone.name} 0"
+    disk = bpy.data.objects.get(disk_name)
+    assert disk is not None, f"disk {disk_name} exists"
+
+    # Disk records its dismember material (Up Arm.R class) as a hex string.
+    assert TT.is_eq(disk.get('FO4_CUT_MATERIAL'), "0xb2e2764f",
+                    "disk records the dismember material hash")
+
+    # Disk must be parented to its dismember bone.
+    assert TT.is_eq(disk.parent, arma, "disk parented to armature")
+    assert TT.is_eq(disk.parent_type, 'BONE', "disk parent_type is BONE")
+    assert TT.is_eq(disk.parent_bone, bone.name,
+                    "disk parent_bone is the upper-arm bone")
+
+    # Limb axis from bone orientation: +Y if pretty else +X (default OFF -> +X).
+    pretty = bool(arma.get("PYN_ROTATE_BONES_PRETTY", False))
+    axis = bone.matrix_local.to_3x3().col[1 if pretty else 0].normalized()
+    expected_local = bone.head_local + axis * 7.6055
+    expected_world = arma.matrix_world @ expected_local
+    actual_world = disk.matrix_world.translation
+
+    assert TT.is_equiv(list(actual_world), list(expected_world),
+                       "first Up Arm.R cut disk at expected world position",
+                       e=0.01)
+
+    # Disk Z axis (cylinder normal) should align with the bone's limb axis —
+    # otherwise the disk wouldn't be orthogonal to the bone.
+    expected_axis_world = (arma.matrix_world.to_3x3() @ axis).normalized()
+    disk_z_world = (disk.matrix_world.to_3x3() @ Vector((0, 0, 1))).normalized()
+    cos_a = abs(disk_z_world.dot(expected_axis_world))
+    assert TT.is_gt(cos_a, 0.99,
+                    f"disk normal aligns with bone axis (cos={cos_a:.4f})")
+
+
+@TT.category('FO4', 'BODYPART', 'PARTITIONS')
+@TT.expect_errors(('Some faces have been assigned to more than one partition',
+                   'Could not find materials file',
+                   'Could not find texture',
+                   'Could not load diffuse texture',
+                   'Could not load normal texture',
+                   'Target of controller not found'))
+def TEST_FO4_CUT_DISKS_GHOUL():
+    """Cut visualization generalizes beyond humans. The Feral Ghoul is a
+    creature with its own skeleton and its own dismember bone names
+    (RUPPERARM, LCALF, RForeArm1, ...). Bone identity comes purely from the
+    shape's SSF (FeralGhoulBase.ssf, a sibling fixture), so the disks attach
+    to the correct creature bones without any human-specific table.
+    """
+    testfile = TTB.test_file(r"tests/FO4/FeralGhoulBase.nif")
+    bpy.ops.import_scene.pynifly(filepath=testfile)
+
+    body = bpy.data.objects.get("FeralGhoulBase:0")
+    assert body is not None, "imported the ghoul body"
+    arma = body.find_armature()
+    assert arma is not None, "found the ghoul armature"
+
+    # Cuts preserved on the mesh as a custom prop.
+    assert 'FO4_CUT_OFFSETS' in body.keys(), "cut offsets on the mesh prop"
+
+    # Cutpoints collection created with disks, nested under the mesh's collection.
+    coll = bpy.data.collections.get(f"{body.name}_Cutpoints")
+    assert coll is not None, "Cutpoints collection created for the creature"
+    assert TT.is_gt(len(coll.objects), 0, "at least one cut disk created")
+
+    # Every disk is bone-parented to a creature bone the SSF named (NOT a
+    # human bone), and records its dismember material. The ghoul SSF bones
+    # are upper-case creature names like RUPPERARM / LCALF.
+    ssf_bones = {"RUPPERARM", "LUPPERARM", "RForeArm1", "LForeArm1",
+                 "RTHIGH", "LTHIGH", "RCALF", "LCALF"}
+    for disk in coll.objects:
+        assert TT.is_eq(disk.parent_type, 'BONE', f"{disk.name} bone-parented")
+        assert disk.parent_bone in arma.data.bones, \
+            f"{disk.name} parent bone '{disk.parent_bone}' exists in armature"
+        assert disk.parent_bone in ssf_bones, \
+            f"{disk.name} attached to an SSF creature bone (got '{disk.parent_bone}')"
+        assert disk.get('FO4_CUT_MATERIAL'), f"{disk.name} records its material"
+
+
+@TT.category('FO4', 'BODYPART', 'PARTITIONS')
+@TT.expect_errors(('Some faces have been assigned to more than one partition',))
+def TEST_FO4_CUT_DISKS_EXPORT():
+    """Phase 6: the cutpoint disks are authoritative on export. Moving a disk
+    changes the cut offset written to the NIF — the edited disk geometry drives
+    the export, overriding the round-tripped FO4_CUT_OFFSETS prop.
+    """
+    testfile = TTB.test_file(r"tests/FO4/VanillaMaleBody.nif")
+    outfile = TTB.test_file(r"tests/Out/TEST_FO4_CUT_DISKS_EXPORT.nif")
+    bpy.ops.import_scene.pynifly(filepath=testfile)
+    body = bpy.data.objects.get("BaseMaleBody:0")
+    arma = body.find_armature()
+    assert body is not None and arma is not None, "imported body + armature"
+
+    # The first Up Arm.R disk sits at the vanilla cut 7.6055 along the bone.
+    disk = bpy.data.objects.get("Cutpoint Arm_UpperArm.R 0")
+    assert disk is not None, "Up Arm.R cut disk 0 exists"
+    bone = arma.data.bones["Arm_UpperArm.R"]
+    pretty = bool(arma.get("PYN_ROTATE_BONES_PRETTY", False))
+    axis_local = bone.matrix_local.to_3x3().col[1 if pretty else 0].normalized()
+    axis_world = (arma.matrix_world.to_3x3() @ axis_local).normalized()
+
+    # Slide the disk +5.0 distally along the bone: 7.6055 -> ~12.6055, a value
+    # neither the round-trip prop nor the supply formula would ever produce.
+    MOVE = 5.0
+    disk.matrix_world = Matrix.Translation(axis_world * MOVE) @ disk.matrix_world
+
+    body.select_set(True)
+    bpy.ops.export_scene.pynifly(filepath=outfile, target_game="FO4")
+
+    nif2 = pyn.NifFile(outfile)
+    shape = nif2.shapes[0]
+    UPARM = 0xb2e2764f
+    cuts = []
+    for seg in shape.partitions:
+        for ss in getattr(seg, 'subsegments', []):
+            if ss.material == UPARM and ss.cut_offsets:
+                cuts.extend(ss.cut_offsets)
+    assert TT.is_eq(len(cuts), 4, f"Up Arm.R bearer still carries 4 cuts (got {cuts})")
+    # The moved disk's value is present; the original 7.6055 is gone.
+    assert any(abs(c - 12.6055) < 0.1 for c in cuts), \
+        f"moved disk reflected in export (~12.6 expected, got {sorted(cuts)})"
+    assert not any(abs(c - 7.6055) < 0.1 for c in cuts), \
+        f"original cut position vacated by the move (got {sorted(cuts)})"
+
+    # An SSF was generated and the shape points at it.
+    assert nif2.shapes[0].segment_file, "segment_file points at generated SSF"
+
+
+def _uparm_r_cuts(nif):
+    """Helper: sorted cut offsets on the Up Arm.R bearer (material 0xb2e2764f)."""
+    UPARM = 0xb2e2764f
+    cuts = []
+    for seg in nif.shapes[0].partitions:
+        for ss in getattr(seg, 'subsegments', []):
+            if ss.material == UPARM and ss.cut_offsets:
+                cuts.extend(ss.cut_offsets)
+    return sorted(cuts)
+
+
+@TT.category('FO4', 'BODYPART', 'PARTITIONS')
+@TT.expect_errors(('Some faces have been assigned to more than one partition',))
+def TEST_FO4_CUT_DISKS_EXPORT_SELECTED():
+    """Selected cutpoint disks export even when they aren't in the body's
+    name-matched collection. Models the "copy vanilla cutpoints onto another
+    body" workflow: the donor disks live in a differently-named collection, so
+    only the selection drives the export.
+    """
+    testfile = TTB.test_file(r"tests/FO4/VanillaMaleBody.nif")
+    outfile = TTB.test_file(r"tests/Out/TEST_FO4_CUT_DISKS_EXPORT_SELECTED.nif")
+    bpy.ops.import_scene.pynifly(filepath=testfile)
+    body = bpy.data.objects.get("BaseMaleBody:0")
+
+    # Break the collection name-match and the round-trip prop, so the ONLY way
+    # cuts can reach the export is via the selected disks.
+    coll = bpy.data.collections.get(f"{body.name}_Cutpoints")
+    assert coll is not None, "cut disks imported"
+    coll.name = "Donor_Cutpoints"
+    if 'FO4_CUT_OFFSETS' in body.keys():
+        del body['FO4_CUT_OFFSETS']
+
+    bpy.ops.object.select_all(action='DESELECT')
+    body.select_set(True)
+    for d in coll.objects:
+        d.select_set(True)
+    bpy.context.view_layer.objects.active = body
+    bpy.ops.export_scene.pynifly(filepath=outfile, target_game="FO4")
+
+    cuts = _uparm_r_cuts(pyn.NifFile(outfile))
+    # Disk path (selected) reproduces vanilla's exact 4 cuts; the formula
+    # fallback would instead emit 6 cuts starting ~3.78.
+    assert TT.is_eq(len(cuts), 4, f"Up Arm.R has vanilla's 4 cuts (got {cuts})")
+    assert all(abs(c - e) < 0.05 for c, e in
+               zip(cuts, [7.6055, 9.5069, 11.4083, 13.3096])), \
+        f"cuts match vanilla, i.e. came from the selected disks (got {cuts})"
+
+
+@TT.category('FO4', 'BODYPART', 'PARTITIONS')
+@TT.expect_errors(('Some faces have been assigned to more than one partition',))
+def TEST_FO4_CUT_DISKS_EXPORT_DUP_COLLECTION():
+    """The cutpoint collection name-match tolerates Blender's .001 suffix.
+    Duplicating a body yields e.g. CanineMaleBody_Cutpoints.001; the exact
+    lookup misses it, so we strip the disambiguation suffix before matching.
+    """
+    testfile = TTB.test_file(r"tests/FO4/VanillaMaleBody.nif")
+    outfile = TTB.test_file(r"tests/Out/TEST_FO4_CUT_DISKS_EXPORT_DUP.nif")
+    bpy.ops.import_scene.pynifly(filepath=testfile)
+    body = bpy.data.objects.get("BaseMaleBody:0")
+
+    coll = bpy.data.collections.get(f"{body.name}_Cutpoints")
+    assert coll is not None, "cut disks imported"
+    coll.name = f"{body.name}_Cutpoints.001"   # simulate Blender duplicate suffix
+    if 'FO4_CUT_OFFSETS' in body.keys():
+        del body['FO4_CUT_OFFSETS']
+
+    bpy.ops.object.select_all(action='DESELECT')
+    body.select_set(True)                       # disks NOT selected — collection match must find them
+    bpy.context.view_layer.objects.active = body
+    bpy.ops.export_scene.pynifly(filepath=outfile, target_game="FO4")
+
+    cuts = _uparm_r_cuts(pyn.NifFile(outfile))
+    assert TT.is_eq(len(cuts), 4, f"Up Arm.R has vanilla's 4 cuts (got {cuts})")
+    assert all(abs(c - e) < 0.05 for c, e in
+               zip(cuts, [7.6055, 9.5069, 11.4083, 13.3096])), \
+        f"cuts match vanilla, i.e. the .001 collection was matched (got {cuts})"
+
+
+@TT.category('FO4', 'BODYPART', 'PARTITIONS')
+@TT.expect_errors(('Some faces have been assigned to more than one partition',))
+def TEST_FO4_CUT_DISKS_IMPORT_OPTION():
+    """import_cutpoints=False suppresses the cut-disk visualization, but the cut
+    data is still preserved on the mesh (so it round-trips on export)."""
+    testfile = TTB.test_file(r"tests/FO4/VanillaMaleBody.nif")
+    bpy.ops.import_scene.pynifly(filepath=testfile, import_cutpoints=False)
+
+    body = bpy.data.objects.get("BaseMaleBody:0")
+    assert body is not None, "imported body"
+    assert 'FO4_CUT_OFFSETS' in body.keys(), "cut data preserved with viz disabled"
+    assert bpy.data.collections.get(f"{body.name}_Cutpoints") is None, \
+        "no Cutpoints collection when import_cutpoints is False"
+    disks = [o for o in bpy.data.objects if 'FO4_CUTPOINT' in o]
+    assert TT.is_eq(len(disks), 0, f"no cut disks created (got {len(disks)})")
+
+
+@TT.category('FO4', 'BODYPART', 'PARTITIONS')
+@TT.expect_errors(('Some faces have been assigned to more than one partition',))
+def TEST_FO4_SSF_GENERATED():
+    """Phase 4: cut offsets are supplied from bone geometry and an SSF file is
+    written alongside the exported NIF.
+
+    Imports vanilla MaleBody, *clears* its FO4_CUT_OFFSETS so the supply step
+    has to regenerate from the formula, exports, then verifies (a) the exported
+    NIF carries non-zero cut offsets on the bearer subsegments, (b) an SSF file
+    sits next to the NIF, and (c) the SSF contains the expected shape entry
+    with DeltaBones for each dismember bone the supply step recognized.
+    """
+    import os, json
+    testfile = TTB.test_file(r"tests/FO4/VanillaMaleBody.nif")
+    outfile = TTB.test_file(r"tests/Out/TEST_FO4_SSF_GENERATED.nif")
+    bpy.ops.import_scene.pynifly(filepath=testfile)
+
+    obj = bpy.context.object
+    # Force the supply *formula* to regenerate cuts from geometry: drop the
+    # round-trip prop AND the cutpoint disks (otherwise the Phase 6 disk path
+    # would drive the export). This mirrors a body that arrived with no SSF and
+    # no cuts at all — the dog-body case the supply step exists for.
+    if 'FO4_CUT_OFFSETS' in obj.keys():
+        del obj['FO4_CUT_OFFSETS']
+    disk_coll = bpy.data.collections.get(f"{obj.name}_Cutpoints")
+    if disk_coll:
+        for d in list(disk_coll.objects):
+            bpy.data.objects.remove(d, do_unlink=True)
+        bpy.data.collections.remove(disk_coll)
+
+    obj.select_set(True)
+    bpy.ops.export_scene.pynifly(filepath=outfile, target_game="FO4")
+
+    # (a) NIF has cut offsets.
+    nif2 = pyn.NifFile(outfile)
+    chk_subs = {}
+    for seg in nif2.shapes[0].partitions:
+        for ss in seg.subsegments:
+            chk_subs[ss.name] = ss
+    total_cuts = sum(len(ss.cut_offsets) for ss in chk_subs.values())
+    assert TT.is_gt(total_cuts, 20,
+                    "supply step produced a reasonable number of cuts")
+
+    # (b) SSF written next to the NIF.
+    ssf_path = os.path.splitext(outfile)[0] + ".ssf"
+    assert os.path.exists(ssf_path), f"SSF file written at {ssf_path}"
+
+    # (c) SSF content has the expected shape entry and bones.
+    with open(ssf_path, "r", encoding="utf-8") as f:
+        ssf = json.load(f)
+    assert TT.is_eq(list(ssf.keys()), ["BaseMaleBody:0"],
+                    "SSF top-level key is the shape name")
+    entry = ssf["BaseMaleBody:0"]
+    bone_names = sorted(d["BoneName"] for d in entry["DeltaBones"])
+    expected_bones = sorted([
+        "RArm_UpperArm", "RArm_ForeArm1",
+        "LArm_UpperArm", "LArm_ForeArm1",
+        "RLeg_Thigh", "RLeg_Calf",
+        "LLeg_Thigh", "LLeg_Calf",
+    ])
+    assert TT.is_eq(bone_names, expected_bones,
+                    "SSF DeltaBones covers all 8 human dismember bones")
+    assert TT.is_eq(entry["BaseBoneName"], "DISABLED", "BaseBoneName default")
+    assert TT.is_eq(entry["uiNumDeltas"], len(expected_bones), "uiNumDeltas")
+
+
+@TT.category('FO4', 'BODYPART', 'PARTITIONS')
 def TEST_BP_SEGMENTS():
     """Can read FO4 bodypart segments"""
 
@@ -3252,6 +3621,7 @@ def TEST_WELWA():
 
 
 @TT.category('FO4')
+@TT.expect_errors(("is not in the armature",))
 def TEST_MUTANT():
     """Test that the supermutant body imports correctly the *second* time"""
     testfile = TTB.test_file(r"tests/FO4/testsupermutantbody.nif")
@@ -3662,6 +4032,38 @@ def TEST_TRIP():
     bodymorphs = tripcheck.shapes['BaseMaleBody']
     assert TT.is_gt(len(bodymorphs), 30, f"morphs count: {len(bodymorphs)}")
     assert TT.is_contains("BTShoulders", bodymorphs.keys(), f"morphs")
+
+
+@TT.category('FO4', 'BODYPART', 'TRI')
+def TEST_TRIP_REIMPORT():
+    """Re-importing an FO4 nif that carries a BODYTRI + .tri loads the trip
+    morphs as shape keys.
+
+    Regression: import_tris passed find_trip's *path* straight to import_trip,
+    which expects a loaded TripFile, crashing with
+    'WindowsPath has no attribute shapes'. Export under a 'meshes' dir so the
+    BODYTRI ref resolves on re-import (find_trip needs a 'meshes' segment).
+    """
+    outfile = TTB.test_file(r"tests/Out/meshes/TEST_TRIP_REIMPORT.nif")
+    os.makedirs(os.path.dirname(outfile), exist_ok=True)
+
+    TTB.append_from_file("BaseMaleBody", True, r"tests\FO4\BodyTalk.blend", r"\Object", "BaseMaleBody")
+    bpy.ops.object.select_all(action='DESELECT')
+    body = TTB.find_shape("BaseMaleBody")
+    body.select_set(True)
+    bpy.context.view_layer.objects.active = body
+    bpy.ops.export_scene.pynifly(filepath=outfile, target_game='FO4', write_bodytri=True)
+
+    # Fresh scene, then re-import the exported nif: the BODYTRI -> .tri must
+    # load as shape keys without the TripFile crash.
+    TTB.clear_all()
+    res = bpy.ops.import_scene.pynifly(filepath=outfile)
+    assert 'FINISHED' in res, "re-import with BODYTRI succeeds (no TripFile crash)"
+    body2 = TTB.find_shape("BaseMaleBody")
+    assert body2 is not None, "body re-imported"
+    assert body2.data.shape_keys is not None, "trip morphs loaded as shape keys"
+    assert TT.is_gt(len(body2.data.shape_keys.key_blocks), 1,
+                    "multiple morph shape keys loaded from the trip")
 
 
 @TT.category('SKYRIM', 'OSD')
