@@ -230,6 +230,31 @@ NIFLY_API void* getNodeParent(void* theNif, void* node) {
     return nif->GetParentNode(theNode);
 }
 
+NIFLY_API int getBlockID(void* nifref, void* block) {
+    NifFile* nif = static_cast<NifFile*>(nifref);
+    nifly::NiObject* object = static_cast<nifly::NiObject*>(block);
+    return nif && object ? static_cast<int>(nif->GetBlockID(object)) : -1;
+}
+
+NIFLY_API int getNodeSwitchIndex(void* node) {
+    nifly::NiNode* theNode = static_cast<nifly::NiNode*>(node);
+    if (auto* switchNode = dynamic_cast<nifly::NiSwitchNode*>(theNode))
+        return static_cast<int>(switchNode->index);
+    return -1;
+}
+
+NIFLY_API int getNodeChildCount(void* node) {
+    nifly::NiNode* theNode = static_cast<nifly::NiNode*>(node);
+    return theNode ? static_cast<int>(theNode->childRefs.GetSize()) : 0;
+}
+
+NIFLY_API int getNodeChildIDByIndex(void* node, int childIndex) {
+    nifly::NiNode* theNode = static_cast<nifly::NiNode*>(node);
+    if (!theNode || childIndex < 0 || static_cast<uint32_t>(childIndex) >= theNode->childRefs.GetSize())
+        return -1;
+    return static_cast<int>(theNode->childRefs.GetBlockRef(static_cast<uint32_t>(childIndex)));
+}
+
 NIFLY_API void* addNode(void* f, const char* name, const MatTransform* xf, void* parent) {
     NifFile* nif = static_cast<NifFile*>(f);
     NiNode* parentNode = static_cast<NiNode*>(parent);

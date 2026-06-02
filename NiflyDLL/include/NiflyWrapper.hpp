@@ -62,6 +62,7 @@ extern "C" NIFLY_API void getGlobalToSkin(void* nifSkinRef, void* shapeRef, void
 extern "C" NIFLY_API int hasSkinInstance(void* shapeRef);
 extern "C" NIFLY_API bool getShapeSkinToBone(void* nifPtr, void* shapePtr, const char* boneName, float* xform);
 extern "C" NIFLY_API bool getShapeSkinToBoneByIndex(void* nifPtr, void* shapePtr, int boneIndex, float* xform);
+extern "C" NIFLY_API int getBlockID(void* nifref, void* block);
 extern "C" NIFLY_API void getTransform(void* theShape, float* buf);
 extern "C" NIFLY_API void getNodeTransform(void* theNode, nifly::MatTransform* buf);
 extern "C" NIFLY_API int getUVs(void* theNif, void* theShape, float* buf, int len, int start);
@@ -72,6 +73,9 @@ extern "C" NIFLY_API int getNodeFlags(void* node);
 extern "C" NIFLY_API void setNodeFlags(void* node, int theFlags);
 extern "C" NIFLY_API int getNodeName(void* theNode, char* buf, int buflen);
 extern "C" NIFLY_API void* getNodeParent(void* theNif, void* node);
+extern "C" NIFLY_API int getNodeSwitchIndex(void* node);
+extern "C" NIFLY_API int getNodeChildCount(void* node);
+extern "C" NIFLY_API int getNodeChildIDByIndex(void* node, int childIndex);
 extern "C" NIFLY_API void getNodeXformToGlobal(void* anim, const char* boneName, nifly::MatTransform* xformBuf);
 extern "C" NIFLY_API void* createNif(const char* targetGame, int rootType, const char* rootName);
 extern "C" NIFLY_API void* createNifShapeFromData(void* parentNif,
