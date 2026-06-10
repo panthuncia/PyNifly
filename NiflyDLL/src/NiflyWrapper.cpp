@@ -206,8 +206,8 @@ NIFLY_API int getNodeBlockname(void* node, char* buf, int buflen) {
 }
 
 NIFLY_API int getNodeFlags(void* node) {
-    nifly::NiNode* theNode = static_cast<nifly::NiNode*>(node);
-    return theNode->flags;
+    nifly::NiAVObject* avObject = static_cast<nifly::NiAVObject*>(node);
+    return avObject ? static_cast<int>(avObject->flags) : 0;
 }
 
 NIFLY_API void setNodeFlags(void* node, int theFlags) {

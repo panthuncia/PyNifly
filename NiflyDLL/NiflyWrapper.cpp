@@ -531,8 +531,8 @@ NIFLY_API void* getNodeByID(void* theNif, uint32_t theID) {
 
 // OBSOLETE
 NIFLY_API int getNodeFlags(void* node) {
-    nifly::NiNode* theNode = static_cast<nifly::NiNode*>(node);
-    return theNode->flags;
+    nifly::NiAVObject* avObject = static_cast<nifly::NiAVObject*>(node);
+    return avObject ? static_cast<int>(avObject->flags) : 0;
 }
 
 // OBSOLETE
