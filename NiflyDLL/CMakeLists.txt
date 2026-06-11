@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.16...3.23)
 
+if(POLICY CMP0177)
+	cmake_policy(SET CMP0177 NEW)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -18,10 +22,16 @@ add_subdirectory(external/nifly)
 # Create interface libs
 add_library(nifly_dll_warnings INTERFACE)
 if(MSVC)
-    target_compile_options(nifly_dll_warnings INTERFACE /W3 /permissive-)
-    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        target_compile_options(nifly_dll_warnings INTERFACE /WX)
-    endif()
+	target_compile_options(nifly_dll_warnings INTERFACE /W3 /permissive-)
+	if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+		target_compile_options(nifly_dll_warnings INTERFACE
+			-Wno-switch
+			-Wno-unused-variable
+			-Wno-unqualified-std-cast-call)
+	endif()
+	if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+		target_compile_options(nifly_dll_warnings INTERFACE /WX)
+	endif()
 else()
     target_compile_options(nifly_dll_warnings INTERFACE -Wall -Wextra -pedantic -Werror)
 endif()

@@ -16,7 +16,7 @@
 #include <filesystem>
 #include <string>
 #include <algorithm>
-#include "niffile.hpp"
+#include "NifFile.hpp"
 #include "bhk.hpp"
 #include "NiflyFunctions.hpp"
 #include "NiflyWrapper.hpp"

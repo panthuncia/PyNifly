@@ -5,10 +5,10 @@
 	Copied from Outfit Studio, all their copywrite restrictions apply
 	*/
 #include <map>
-//#include "object3d.hpp"
+//#include "Object3D.hpp"
 #include "BasicTypes.hpp"
-#include "geometry.hpp"
-#include "skin.hpp"
+#include "Geometry.hpp"
+#include "Skin.hpp"
 //#include "NifFile.hpp"
 //#include "NifUtil.hpp"
 #include "Anim.hpp"
